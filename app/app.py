@@ -35,32 +35,55 @@ def load_data():
     df['ds'] = pd.to_datetime(df['ds'])
     df = df[df['y'] < 500]
     df = df[df['y'] > 0]
+    
+    # Remove duplicates: keep the latest for each ticker+date
     df = df.sort_values('ds').drop_duplicates(subset=['ticker', 'ds'], keep='last')
     df = df.reset_index(drop=True)
     
     return df
 
 # -------------------------------------------------------------------
-# Prophet Forecasting
+# Prophet Forecasting (with nuclear dedup)
 # -------------------------------------------------------------------
 def run_prophet(df_company, forecast_periods=12):
-    # --- AGGRESSIVE CLEANING FOR PROPHET ---
+    # --- EXTREME CLEANING ---
+    # 1. Select only needed columns
     df_prophet = df_company[['ds', 'y']].copy()
+    
+    # 2. Sort by date
     df_prophet = df_prophet.sort_values('ds')
-    df_prophet = df_prophet.drop_duplicates(subset=['ds'], keep='last')
+    
+    # 3. Group by date, take the mean (if duplicates exist, this resolves them)
+    df_prophet = df_prophet.groupby('ds', as_index=False).mean()
+    
+    # 4. Drop any remaining NaN
+    df_prophet = df_prophet.dropna()
+    
+    # 5. Reset index to ensure uniqueness
     df_prophet = df_prophet.reset_index(drop=True)
     
+    # 6. Ensure at least 2 data points
+    if len(df_prophet) < 2:
+        st.error("Not enough data points for forecasting. Need at least 2 quarters.")
+        return None, None
+    
+    # 7. Create Prophet model with minimal parameters
     model = Prophet(
         yearly_seasonality=True,
         weekly_seasonality=False,
         daily_seasonality=False,
-        changepoint_prior_scale=0.05
+        changepoint_prior_scale=0.05,
+        interval_width=0.95
     )
     
+    # 8. Fit
     model.fit(df_prophet)
+    
+    # 9. Forecast
     future = model.make_future_dataframe(periods=forecast_periods, freq='Q')
     forecast = model.predict(future)
     
+    # 10. Clamp negative to zero
     forecast['yhat_lower'] = forecast['yhat_lower'].clip(lower=0)
     forecast['yhat_upper'] = forecast['yhat_upper'].clip(lower=0)
     forecast['yhat'] = forecast['yhat'].clip(lower=0)
@@ -121,6 +144,10 @@ def main():
     st.subheader(f"🔮 {selected_ticker} — Revenue Forecast")
     with st.spinner("Training Prophet model..."):
         model, forecast = run_prophet(df_company, forecast_periods=forecast_quarters)
+    
+    if model is None:
+        st.error("Forecast failed. Please try a different company or reduce forecast horizon.")
+        return
     
     fig_forecast = model.plot(forecast)
     st.pyplot(fig_forecast)
