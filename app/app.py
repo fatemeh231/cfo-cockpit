@@ -19,7 +19,7 @@ st.set_page_config(
 )
 
 # -------------------------------------------------------------------
-# Load Data with Outlier Filtering
+# Load Data (Cleaned + Deduplicated)
 # -------------------------------------------------------------------
 def load_data():
     project_root = Path(__file__).parent.parent
@@ -31,30 +31,50 @@ def load_data():
     
     df = pd.read_csv(data_path)
     
-    # --- FIX: Remove duplicates per company ---
-    df = df.drop_duplicates(subset=['ticker', 'ds'], keep='last')
-    # -----------------------------------------
-    
+    # --- AGGRESSIVE CLEANING ---
+    # 1. Convert to datetime
     df['ds'] = pd.to_datetime(df['ds'])
+    
+    # 2. Remove outliers > 500B
+    df = df[df['y'] < 500]
+    df = df[df['y'] > 0]
+    
+    # 3. Remove duplicates (keep the most recent per ticker + date)
+    df = df.sort_values('ds').drop_duplicates(subset=['ticker', 'ds'], keep='last')
+    
+    # 4. Reset index to ensure clean numbering
+    df = df.reset_index(drop=True)
+    
     return df
 
 # -------------------------------------------------------------------
 # Prophet Forecasting
 # -------------------------------------------------------------------
 def run_prophet(df_company, forecast_periods=12):
+    # Prepare data for Prophet (reset index to avoid duplicate issues)
+    df_prophet = df_company[['ds', 'y']].copy()
+    df_prophet = df_prophet.sort_values('ds')
+    df_prophet = df_prophet.reset_index(drop=True)
+    
+    # Remove any remaining duplicates in the company data
+    df_prophet = df_prophet.drop_duplicates(subset=['ds'], keep='last')
+    
     model = Prophet(
         yearly_seasonality=True,
         weekly_seasonality=False,
         daily_seasonality=False,
-        changepoint_prior_scale=0.05,
-        # Add a floor to prevent the forecast from going deeply negative
-        # (Revenue can't be negative)
-        # Note: Prophet doesn't have a direct floor param, but we can
-        # manually clamp the yhat_lower/yhat_upper later.
+        changepoint_prior_scale=0.05
     )
-    model.fit(df_company[['ds', 'y']])
+    
+    model.fit(df_prophet)
     future = model.make_future_dataframe(periods=forecast_periods, freq='Q')
     forecast = model.predict(future)
+    
+    # Clamp to zero (revenue can't be negative)
+    forecast['yhat_lower'] = forecast['yhat_lower'].clip(lower=0)
+    forecast['yhat_upper'] = forecast['yhat_upper'].clip(lower=0)
+    forecast['yhat'] = forecast['yhat'].clip(lower=0)
+    
     return model, forecast
 
 # -------------------------------------------------------------------
@@ -89,6 +109,8 @@ def main():
     
     # Filter data for selected company
     df_company = df_all[df_all['ticker'] == selected_ticker].copy()
+    df_company = df_company.sort_values('ds')
+    df_company = df_company.reset_index(drop=True)
     
     if df_company.empty:
         st.warning(f"No data found for {selected_ticker}")
@@ -137,12 +159,6 @@ def main():
     with st.spinner("Training Prophet model..."):
         model, forecast = run_prophet(df_company, forecast_periods=forecast_quarters)
     
-    # Optional: Clamp the forecast lower bound to 0 to prevent displaying negative revenue
-    # This is for visual cleanliness (revenue can't be negative)
-    forecast['yhat_lower'] = forecast['yhat_lower'].clip(lower=0)
-    forecast['yhat_upper'] = forecast['yhat_upper'].clip(lower=0)
-    forecast['yhat'] = forecast['yhat'].clip(lower=0)
-    
     fig_forecast = model.plot(forecast)
     st.pyplot(fig_forecast)
     
@@ -164,7 +180,6 @@ def main():
     scenario_value = last_value * (1 + growth_rate)
     scenario_impact = scenario_value - last_value
     
-    # Ensure scenario doesn't go negative
     if scenario_value < 0:
         scenario_value = 0
     
