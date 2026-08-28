@@ -1,8 +1,8 @@
 pandas>=2.0.0
 numpy>=1.24.0
-pystan==2.19.1.1
-prophet>=1.1.0
 plotly>=5.17.0
 streamlit>=1.28.0
 matplotlib>=3.7.0
 python-dotenv>=1.0.0
+cmdstanpy==1.1.0
+prophet==1.1.5
