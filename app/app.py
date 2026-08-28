@@ -32,43 +32,26 @@ def load_data():
     df['ds'] = pd.to_datetime(df['ds'])
     df = df[df['y'] < 500]
     df = df[df['y'] > 0]
-    
-    # Keep only the most recent per ticker+date (but we also want to aggregate)
     df = df.sort_values('ds').drop_duplicates(subset=['ticker', 'ds'], keep='last')
     df = df.reset_index(drop=True)
     
     return df
 
 # -------------------------------------------------------------------
-# Prophet Forecasting (with nuclear dedup + validation)
+# Prophet Forecasting (with nuclear dedup + QE fix)
 # -------------------------------------------------------------------
 def run_prophet(df_company, forecast_periods=12):
-    # --- PREPARE PROPHET DATA ---
-    # 1. Keep only ds and y
+    # Prepare data
     df_prophet = df_company[['ds', 'y']].copy()
-    
-    # 2. Sort by date
     df_prophet = df_prophet.sort_values('ds')
-    
-    # 3. Aggressively group by date to remove any duplicates
-    #    Use mean (if multiple values, average them)
     df_prophet = df_prophet.groupby('ds', as_index=False).mean()
-    
-    # 4. Reset index and ensure no duplicates in ds
     df_prophet = df_prophet.reset_index(drop=True)
     
-    # 5. Check for duplicates after grouping
-    if df_prophet['ds'].duplicated().any():
-        dup_dates = df_prophet[df_prophet['ds'].duplicated()]['ds'].tolist()
-        st.error(f"Duplicate dates still exist after grouping: {dup_dates[:5]}... Please check your CSV file.")
-        st.stop()
-    
-    # 6. Ensure enough data
     if len(df_prophet) < 3:
         st.error("Not enough data points (need at least 3).")
-        st.stop()
+        return None, None
     
-    # 7. Create Prophet model WITHOUT any seasonality to avoid crosstab issues
+    # Create model
     model = Prophet(
         yearly_seasonality=False,
         weekly_seasonality=False,
@@ -78,7 +61,13 @@ def run_prophet(df_company, forecast_periods=12):
     
     model.fit(df_prophet)
     
-    future = model.make_future_dataframe(periods=forecast_periods, freq='Q')
+    # --- FIX: Use 'QE' instead of 'Q' ---
+    try:
+        future = model.make_future_dataframe(periods=forecast_periods, freq='QE')
+    except:
+        # Fallback: try 'Q' if 'QE' fails
+        future = model.make_future_dataframe(periods=forecast_periods, freq='Q')
+    
     forecast = model.predict(future)
     
     # Clamp to zero
@@ -96,9 +85,8 @@ def main():
     st.markdown("### Interactive revenue forecasting for major US companies")
     
     df_all = load_data()
-    
     if df_all.empty:
-        st.warning("No data loaded. Please check the data file.")
+        st.warning("No data loaded.")
         return
     
     with st.sidebar:
@@ -119,7 +107,6 @@ def main():
         st.warning(f"No data found for {selected_ticker}")
         return
     
-    # KPIs
     col1, col2, col3, col4 = st.columns(4)
     latest_revenue = df_company['y'].iloc[-1]
     avg_revenue = df_company['y'].mean()
@@ -135,13 +122,11 @@ def main():
     with col4:
         st.metric("Max Revenue", f"${max_revenue:.2f}B")
     
-    # Historical chart
     st.subheader(f"📈 {selected_ticker} — Historical Revenue")
     fig_hist = px.line(df_company, x='ds', y='y', title=f"{selected_ticker} Quarterly Revenue", labels={'ds': 'Date', 'y': 'Revenue ($B)'}, markers=True)
     fig_hist.update_layout(height=400)
     st.plotly_chart(fig_hist, use_container_width=True)
     
-    # Forecast
     st.subheader(f"🔮 {selected_ticker} — Revenue Forecast")
     with st.spinner("Training Prophet model..."):
         model, forecast = run_prophet(df_company, forecast_periods=forecast_quarters)
@@ -152,7 +137,6 @@ def main():
     fig_forecast = model.plot(forecast)
     st.pyplot(fig_forecast)
     
-    # Forecast table
     st.subheader("📋 Forecast Data")
     forecast_table = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].tail(forecast_quarters)
     forecast_table['yhat'] = forecast_table['yhat'].round(2)
@@ -161,7 +145,6 @@ def main():
     forecast_table.columns = ['Date', 'Forecast ($B)', 'Lower Bound', 'Upper Bound']
     st.dataframe(forecast_table, use_container_width=True)
     
-    # Scenario
     st.subheader("🧠 Scenario Analysis (What-If)")
     last_value = df_company['y'].iloc[-1]
     scenario_value = last_value * (1 + growth_rate)
