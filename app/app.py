@@ -21,37 +21,26 @@ st.set_page_config(
 # -------------------------------------------------------------------
 # Load Data with Outlier Filtering
 # -------------------------------------------------------------------
-@st.cache_data
 def load_data():
-    # Absolute path using project root
     project_root = Path(__file__).parent.parent
     data_path = project_root / 'data' / 'processed' / 'all_companies_revenue.csv'
     
     if not data_path.exists():
         st.error(f"❌ File not found: {data_path}")
-        st.info("Please make sure `all_companies_revenue.csv` exists in `data/processed/`")
         st.stop()
     
     df = pd.read_csv(data_path)
     
-    # --- OUTLIER FIX START ---
-    # Remove extreme outliers.
-    # 1. Remove negative revenue (impossible).
-    # 2. Remove revenue > $500 Billion. This removes the erroneous spikes
-    #    we saw in PLTR (4,475B) and WFC (3,351B).
-    #    Apple's quarterly max is around ~$120B, so $500B is very safe.
-    df = df[(df['y'] > 0) & (df['y'] < 500)]
-    # --- OUTLIER FIX END ---
+    # --- FIX: Remove duplicates per company ---
+    df = df.drop_duplicates(subset=['ticker', 'ds'], keep='last')
+    # -----------------------------------------
     
-    # Convert to datetime
     df['ds'] = pd.to_datetime(df['ds'])
-    
     return df
 
 # -------------------------------------------------------------------
 # Prophet Forecasting
 # -------------------------------------------------------------------
-@st.cache_data
 def run_prophet(df_company, forecast_periods=12):
     model = Prophet(
         yearly_seasonality=True,
